@@ -1,5 +1,4 @@
 #include "Peer.h"
-#include <boost/asio.hpp>
 #include <chrono>
 
 namespace protoo
@@ -44,25 +43,22 @@ namespace protoo
 
 		transport_->send(request);
 
-		auto& promise = sents_[id];
+		mtx_sents_.lock();
+		auto& sent = sents_[id];
 		int size = sents_.size();
+		sent.clock = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500 * (15 + int(0.1 * size)));
+		auto future = sent.promise.get_future();
+		mtx_sents_.unlock();
 
-		boost::asio::io_service io;
-		boost::asio::steady_timer timer(io, std::chrono::milliseconds(1500 * (15 + int(0.1 * size))));
-		timer.async_wait([this, id](const boost::system::error_code& ec)
-			{
-				auto it = sents_.find(id);
-				if (it == sents_.end())
-				{
-					return;
-				}
-				it->second.set_exception(std::make_exception_ptr(std::exception("request timeout")));
-			});
-
-		auto future = promise.get_future();
-		const json& response = future.get();
-		sents_.erase(id);
-		return response;
+		try
+		{
+			const json& response = future.get();
+			return response;
+		}
+		catch (const std::exception& e)
+		{
+			throw e;
+		}
 	}
 
 	void Peer::notify(const std::string& method, const json& data)
@@ -96,6 +92,7 @@ namespace protoo
 		{
 			open_thread_ = std::make_unique<std::thread>(open_handler_);
 		}
+		timer_thread_ = std::make_unique<std::thread>(&Peer::onTimer ,this);
 		notification_thread_ = std::make_unique<std::thread>(&Peer::handleNotification, this);
 	}
 
@@ -188,6 +185,7 @@ namespace protoo
 	void Peer::handleResponse(const json& response)
 	{
 		int id = response["id"];
+		std::unique_lock<std::mutex> lk(mtx_sents_);
 		auto it = sents_.find(id);
 		if (it == sents_.end())
 		{
@@ -200,12 +198,14 @@ namespace protoo
 			&& okIt->is_boolean()
 			&& okIt->get<bool>())
 		{
-			it->second.set_value(response["data"]);
+			it->second.promise.set_value(response["data"]);
+			sents_.erase(it);
 		}
 		else
 		{
 			std::string reason = response["errorReason"];
-			it->second.set_exception(std::make_exception_ptr(std::exception(reason.c_str())));
+			it->second.promise.set_exception(std::make_exception_ptr(std::exception(reason.c_str())));
+			sents_.erase(it);
 		}
 	}
 
@@ -225,7 +225,34 @@ namespace protoo
 			auto message = *notification_message_.begin();
 			notification_message_.pop_front();
 			lk.unlock();
-			notification_handler_(message);
+			if(notification_handler_)
+				notification_handler_(message);
+		}
+	}
+
+	void Peer::onTimer()
+	{
+		bool empty{ true };
+		while (!closed_)
+		{
+			empty = true;
+			std::chrono::steady_clock::time_point clock = std::chrono::steady_clock::now();
+			std::unique_lock<std::mutex> lk(mtx_sents_);
+			for (auto it = sents_.begin(); it != sents_.end(); ++it)
+			{
+				if (it->second.clock <= clock)
+				{
+					it->second.promise.set_exception(std::make_exception_ptr(std::exception("request timeout")));
+					sents_.erase(it);
+					empty = false;
+					break;
+				}
+			}
+			if (empty)
+			{
+				lk.unlock();
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			}
 		}
 	}
 

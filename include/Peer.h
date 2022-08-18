@@ -51,12 +51,22 @@ namespace protoo
 		void handleRequest(const json& request);
 		void handleResponse(const json& response);
 		void handleNotification();
+
+		void onTimer();
+
+		typedef struct 
+		{
+			std::promise<json> promise;
+			std::chrono::steady_clock::time_point clock;
+		}sent_t;
 	private:
 		std::unique_ptr<WebSocketTransport> transport_;
 		bool closed_{ false };
 		bool connected_{ false };
 		std::random_device random_;
-		std::map<int, std::promise<json> > sents_;
+
+		std::map<int, sent_t> sents_;
+		std::mutex mtx_sents_;
 
 		std::condition_variable cond_notification_;
 		std::mutex mtx_notification_;
@@ -71,6 +81,7 @@ namespace protoo
 		notification_handler notification_handler_;
 
 		std::unique_ptr<std::thread> open_thread_;
+		std::unique_ptr<std::thread> timer_thread_;
 	};
 }
 

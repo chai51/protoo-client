@@ -28,9 +28,6 @@ link_directories(
   ${Boost_LIBRARY_DIRS}
 )
 
-message("chai log ${OPENSSL_CRYPTO_LIBRARY}")
-message("chai log ${OPENSSL_CRYPTO_LIBRARY}")
-
 file(GLOB FILE
   src/*.cpp
 )
@@ -39,8 +36,6 @@ add_library(protoo STATIC ${FILE})
 
 target_link_libraries(
   protoo
-  ${OPENSSL_CRYPTO_LIBRARY}
-  ${OPENSSL_SSL_LIBRARY}
 )
 
 install(TARGETS protoo
